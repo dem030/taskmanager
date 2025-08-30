@@ -1,106 +1,136 @@
 import sys
 import subprocess
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QTableWidget, \
-    QTableWidgetItem, QPushButton, QMessageBox, QTextEdit, QHBoxLayout
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QPushButton,
+    QTableWidget, QTableWidgetItem, QHBoxLayout, QLineEdit,
+    QMessageBox, QLabel, QHeaderView, QInputDialog  
+)
 from PyQt5.QtCore import QTimer
 
-BASH_PATH = "src"  # cartella dove si trovano gli script bash
+SRC_DIR = "src/"
 
+def run_script(script, args=[]):
+    try:
+        result = subprocess.run(
+            ["bash", SRC_DIR + script] + args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        if result.stderr:
+            print("Errore:", result.stderr)
+        return result.stdout.strip().splitlines()
+    except Exception as e:
+        print("Errore esecuzione script:", e)
+        return []
 
-class TaskManager(QMainWindow):
+class TaskManager(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Task Manager - GUI + Bash")
-        self.setGeometry(200, 200, 800, 500)
-
-        self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["PID", "User", "CPU %", "Mem %", "Command"])
-
-        # Pulsanti
-        btn_layout = QHBoxLayout()
-        self.refresh_btn = QPushButton("Aggiorna")
-        self.kill_btn = QPushButton("Termina processo")
-        self.tree_btn = QPushButton("Vista ad albero")
-
-        self.refresh_btn.clicked.connect(self.load_processes)
-        self.kill_btn.clicked.connect(self.kill_process)
-        self.tree_btn.clicked.connect(self.show_tree)
-
-        btn_layout.addWidget(self.refresh_btn)
-        btn_layout.addWidget(self.kill_btn)
-        btn_layout.addWidget(self.tree_btn)
+        self.setWindowTitle("Task Manager - PyQt5")
+        self.resize(900, 500)
 
         layout = QVBoxLayout()
+
+        # filtro
+        filter_layout = QHBoxLayout()
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("Filtra per nome processo...")
+        filter_btn = QPushButton("Applica filtro")
+        filter_btn.clicked.connect(self.update_table)
+        filter_layout.addWidget(QLabel("Filtro:"))
+        filter_layout.addWidget(self.filter_input)
+        filter_layout.addWidget(filter_btn)
+        layout.addLayout(filter_layout)
+
+        # tabella processi
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["PID", "USER", "CPU%", "MEM%", "COMMAND"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         layout.addWidget(self.table)
+
+        # pulsanti azioni
+        btn_layout = QHBoxLayout()
+        kill_btn = QPushButton("Kill (SIGTERM)")
+        kill_btn.clicked.connect(self.kill_process)
+        stop_btn = QPushButton("Stop (SIGSTOP)")
+        stop_btn.clicked.connect(self.stop_process)
+        cont_btn = QPushButton("Continue (SIGCONT)")
+        cont_btn.clicked.connect(self.cont_process)
+        renice_btn = QPushButton("Renice")
+        renice_btn.clicked.connect(self.renice_process)
+
+        btn_layout.addWidget(kill_btn)
+        btn_layout.addWidget(stop_btn)
+        btn_layout.addWidget(cont_btn)
+        btn_layout.addWidget(renice_btn)
         layout.addLayout(btn_layout)
 
-        container = QWidget()
-        container.setLayout(layout)
-        self.setCentralWidget(container)
+        self.setLayout(layout)
 
-        # Timer per aggiornare ogni 5 secondi
+        # timer refresh ogni 2 sec
         self.timer = QTimer()
-        self.timer.timeout.connect(self.load_processes)
-        self.timer.start(5000)
+        self.timer.timeout.connect(self.update_table)
+        self.timer.start(2000)
 
-        self.load_processes()
+        self.update_table()
 
-    def run_bash(self, script, args=None):
-        cmd = ["bash", f"{BASH_PATH}/{script}"]
-        if args:
-            cmd.extend(args)
-        try:
-            output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
-            return output.decode().strip()
-        except subprocess.CalledProcessError as e:
-            return f"ERROR: {e.output.decode()}"
+    def update_table(self):
+        processes = run_script("list_processes.sh")
+        filter_text = self.filter_input.text().lower()
 
-    def load_processes(self):
-        output = self.run_bash("list_processes.sh")
-        if output.startswith("ERROR"):
-            QMessageBox.critical(self, "Errore", output)
-            return
+        rows = []
+        for line in processes:
+            parts = line.split(None, 4)
+            if len(parts) < 5:
+                continue
+            pid, user, cpu, mem, cmd = parts
+            if filter_text and filter_text not in cmd.lower():
+                continue
+            rows.append((pid, user, cpu, mem, cmd))
 
-        rows = output.split("\n")
         self.table.setRowCount(len(rows))
-        for i, row in enumerate(rows):
-            cols = row.split(",")
-            for j, val in enumerate(cols):
-                self.table.setItem(i, j, QTableWidgetItem(val))
+        for r, row in enumerate(rows):
+            for c, val in enumerate(row):
+                self.table.setItem(r, c, QTableWidgetItem(val))
+
+    def get_selected_pid(self):
+        selected = self.table.currentRow()
+        if selected < 0:
+            QMessageBox.warning(self, "Errore", "Seleziona un processo dalla tabella")
+            return None
+        pid = self.table.item(selected, 0).text()
+        return pid
 
     def kill_process(self):
-        row = self.table.currentRow()
-        if row == -1:
-            QMessageBox.warning(self, "Attenzione", "Seleziona un processo da terminare.")
-            return
+        pid = self.get_selected_pid()
+        if pid:
+            run_script("kill_process.sh", [pid])
+            self.update_table()
 
-        pid = self.table.item(row, 0).text()
-        confirm = QMessageBox.question(self, "Conferma", f"Vuoi terminare il processo PID {pid}?",
-                                       QMessageBox.Yes | QMessageBox.No)
-        if confirm == QMessageBox.Yes:
-            result = self.run_bash("kill_process.sh", [pid])
-            if "OK" in result:
-                QMessageBox.information(self, "Successo", f"Processo {pid} terminato.")
-                self.load_processes()
-            else:
-                QMessageBox.critical(self, "Errore", f"Impossibile terminare il processo {pid}.")
+    def stop_process(self):
+        pid = self.get_selected_pid()
+        if pid:
+            run_script("stop_process.sh", [pid])
+            self.update_table()
 
-    def show_tree(self):
-        output = self.run_bash("process_tree.sh")
-        tree_window = QTextEdit()
-        tree_window.setReadOnly(True)
-        tree_window.setPlainText(output)
+    def cont_process(self):
+        pid = self.get_selected_pid()
+        if pid:
+            run_script("cont_process.sh", [pid])
+            self.update_table()
 
-        msg_box = QMainWindow(self)
-        msg_box.setWindowTitle("Vista ad albero")
-        msg_box.setGeometry(250, 250, 600, 400)
-        msg_box.setCentralWidget(tree_window)
-        msg_box.show()
-
+    def renice_process(self):
+        pid = self.get_selected_pid()
+        if pid:
+            val, ok = QInputDialog.getInt(self, "Renice", f"Nuovo nice per PID {pid}", 0, -20, 19, 1)
+            if ok:
+                run_script("renice_process.sh", [pid, str(val)])
+                self.update_table()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = TaskManager()
     window.show()
-    sys.exit(app.exec_())
+    
