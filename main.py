@@ -77,7 +77,7 @@ class TaskManager(QWidget):
         self.update_table()
 
     def update_table(self):
-        processes = run_script("list_processes.sh")
+        processes = run_script("list.sh")
         filter_text = self.filter_input.text().lower()
 
         rows = []
@@ -106,19 +106,19 @@ class TaskManager(QWidget):
     def kill_process(self):
         pid = self.get_selected_pid()
         if pid:
-            run_script("kill_process.sh", [pid])
+            run_script("kill.sh", [pid])
             self.update_table()
 
     def stop_process(self):
         pid = self.get_selected_pid()
         if pid:
-            run_script("stop_process.sh", [pid])
+            run_script("stop.sh", [pid])
             self.update_table()
 
     def cont_process(self):
         pid = self.get_selected_pid()
         if pid:
-            run_script("cont_process.sh", [pid])
+            run_script("cont.sh", [pid])
             self.update_table()
 
     def renice_process(self):
@@ -126,7 +126,7 @@ class TaskManager(QWidget):
         if pid:
             val, ok = QInputDialog.getInt(self, "Renice", f"Nuovo nice per PID {pid}", 0, -20, 19, 1)
             if ok:
-                run_script("renice_process.sh", [pid, str(val)])
+                run_script("renice.sh", [pid, str(val)])
                 self.update_table()
 
 if __name__ == "__main__":
