@@ -1,25 +1,32 @@
 #!/bin/bash
-# monitor.sh
-LOGFILE=${1:-monitor.log}
-INTERVAL=${2:-5}
-CPU_THRESH=${CPU_THRESH:-90}
-ZOMBIE_AGE=${ZOMBIE_AGE:-60}
+# monitor.sh — silenzioso, logging centralizzato
 
+BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
+LOGGER="$BASE_DIR/logger.sh"
 
-while true; do
-# CPU > threshold
-ps -eo pid,pcpu,comm --no-headers | awk -v thr="$CPU_THRESH" '$2 > thr { print strftime("%Y-%m-%d %H:%M:%S"), "CPU_HIGH", $1, $2, $3 }' >> "$LOGFILE"
+CPU_THRESH=90
+ZOMBIE_AGE=60
 
+now_epoch() { date +%s; }
 
-# zombie processes
-ps -eo pid,stat,etime,comm --no-headers | awk -v za="$ZOMBIE_AGE" '
-$2 ~ /Z/ { split($3, t, "-");
-# etime format [[dd-]hh:]mm:ss - approximate seconds
-s=0; if(index($3,"-")>0){ split($3, a, "-"); days=a[1]; rest=a[2]; } else { days=0; rest=$3 }
-n=split(rest,b,":"); if(n==3) s=b[1]*3600+b[2]*60+b[3]; else if(n==2) s=b[1]*60+b[2]; else s=0;
-s_total = s + days*86400;
-if(s_total > za) print strftime("%Y-%m-%d %H:%M:%S"), "ZOMBIE_STALE", $1, s_total, $4 }' >> "$LOGFILE"
-
-
-sleep "$INTERVAL"
+# ---------------- CPU > 90% ----------------
+ps -eo pid,pcpu,user,comm --no-headers | while read -r pid pcpu user comm; do
+  over=$(awk -v a="$pcpu" -v b="$CPU_THRESH" 'BEGIN{print (a>b)?1:0}')
+  if [ "$over" -eq 1 ]; then
+    [ -x "$LOGGER" ] && "$LOGGER" "ALERT" "CPU>90 pid=$pid user=$user cpu=$pcpu cmd=$comm"
+  fi
 done
+
+# ---------------- ZOMBIE > 60s ----------------
+# usa etimes (secondi) per semplicità/affidabilità
+ps -eo pid,stat,etimes,ppid,user,comm --no-headers | while read -r pid stat etimes ppid user comm; do
+  case "$stat" in
+    Z*)
+      if [ "$etimes" -ge "$ZOMBIE_AGE" ]; then
+        [ -x "$LOGGER" ] && "$LOGGER" "ALERT" "ZOMBIE>60 pid=$pid ppid=$ppid user=$user age_s=$etimes cmd=$comm"
+      fi
+    ;;
+  esac
+done
+
+exit 0
