@@ -2,49 +2,93 @@ import tkinter as tk
 from tkinter import ttk, simpledialog, messagebox
 import subprocess
 import os
-import pwd
 import time
+from pathlib import Path
 
 REFRESH_MS = 3000
-LOG_FILE = "logs/events.log"
+
+BASE_DIR = Path(__file__).resolve().parent
+SCRIPTS_DIR = BASE_DIR / "scripts"
+LOG_FILE = BASE_DIR / "logs" / "events.log"
 
 # ---------------------------
 # Utils
 # ---------------------------
 
 def current_user():
-    return pwd.getpwuid(os.getuid()).pw_name
+    """Best-effort current username.
+
+    Notes:
+    - On Linux, prefers `pwd` + uid.
+    - On platforms without `pwd` (e.g. native Windows), falls back to env vars.
+    """
+    try:
+        import pwd  # type: ignore
+
+        return pwd.getpwuid(os.getuid()).pw_name
+    except Exception:
+        return os.environ.get("USER") or os.environ.get("USERNAME") or ""
 
 def is_root():
-    return os.geteuid() == 0
-
-def run_action(script, args):
+    """True when running as root on Unix-like OSes."""
     try:
-        subprocess.run(["bash", script] + args,
-                       stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL,
-                       check=False)
+        return os.geteuid() == 0
+    except AttributeError:
+        return False
+
+def _script_path(script_name: str) -> Path:
+    return SCRIPTS_DIR / script_name
+
+def run_action(script_name, args):
+    script_path = _script_path(script_name)
+    if not script_path.exists():
+        messagebox.showerror(
+            "Missing script",
+            f"Script not found: {script_path}\n\n"
+            "Run from the repo root and ensure the scripts/ directory is present."
+        )
+        return
+
+    try:
+        subprocess.run(
+            ["bash", str(script_path)] + args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except FileNotFoundError:
+        messagebox.showerror(
+            "bash not found",
+            "This app requires `bash` (and Linux utilities like `ps`).\n"
+            "On Windows, run it under WSL or another Linux environment."
+        )
     except Exception:
+        # Avoid crashing the UI on unexpected errors.
         pass
 
 def read_logs():
     try:
-        with open(LOG_FILE) as f:
-            return f.read()
+        return LOG_FILE.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return ""
 
 def fetch_processes():
-    """
-    Legge processi direttamente con ps
-    Include TEMPO ATTIVO REALE (etimes)
+    """Legge processi direttamente con ps.
+
+    Include TEMPO ATTIVO REALE (etimes).
+    Returns an empty list if `ps` is unavailable.
     """
     cmd = [
         "ps",
-        "-eo", "pid,user,pcpu,pmem,etimes,etime,comm",
-        "--no-headers"
+        "-eo",
+        "pid,user,pcpu,pmem,etimes,etime,comm",
+        "--no-headers",
     ]
-    out = subprocess.check_output(cmd, text=True)
+
+    try:
+        out = subprocess.check_output(cmd, text=True)
+    except Exception:
+        return []
 
     procs = []
     for line in out.splitlines():
@@ -52,15 +96,17 @@ def fetch_processes():
         if len(parts) == 7:
             pid, user, cpu, mem, etimes, etime, cmd = parts
             try:
-                procs.append({
-                    "PID": int(pid),
-                    "USER": user,
-                    "CPU": float(cpu),
-                    "MEM": float(mem),
-                    "ETIMES": int(etimes),  # secondi
-                    "TIME": etime,
-                    "CMD": cmd
-                })
+                procs.append(
+                    {
+                        "PID": int(pid),
+                        "USER": user,
+                        "CPU": float(cpu),
+                        "MEM": float(mem),
+                        "ETIMES": int(etimes),  # secondi
+                        "TIME": etime,
+                        "CMD": cmd,
+                    }
+                )
             except ValueError:
                 continue
     return procs
@@ -157,10 +203,13 @@ class TaskManagerGUI:
             self.tree.delete(r)
 
         for p in self.processes:
+            # Format CPU/MEM for readability
+            cpu = f"{p['CPU']:.1f}"
+            mem = f"{p['MEM']:.1f}"
             self.tree.insert(
                 "",
                 tk.END,
-                values=(p["PID"], p["USER"], p["CPU"], p["MEM"], p["TIME"], p["CMD"])
+                values=(p["PID"], p["USER"], cpu, mem, p["TIME"], p["CMD"])
             )
 
     def update_log(self):
@@ -176,7 +225,10 @@ class TaskManagerGUI:
         sel = self.tree.focus()
         if not sel:
             return None
-        return self.tree.item(sel)["values"][0]
+        try:
+            return int(self.tree.item(sel)["values"][0])
+        except Exception:
+            return None
 
     # ---------------------------
     # Azioni
@@ -184,7 +236,16 @@ class TaskManagerGUI:
 
     def kill(self):
         pid = self.selected_pid()
-        if pid:
+        if not pid:
+            return
+
+        use_sigkill = messagebox.askyesno(
+            "Kill process",
+            f"Kill PID {pid}?\n\nYes = SIGKILL (-9)\nNo = SIGTERM",
+        )
+        if use_sigkill:
+            run_action("kill.sh", [str(pid), "KILL"])
+        else:
             run_action("kill.sh", [str(pid)])
 
     def stop(self):
@@ -208,15 +269,15 @@ class TaskManagerGUI:
     def show_tree(self):
         try:
             output = subprocess.check_output(
-            ["bash", "pstree.sh"],
-            text=True
-        )
-        except subprocess.CalledProcessError:
+                ["bash", str(_script_path("pstree.sh"))],
+                text=True,
+            )
+        except Exception:
             output = "Errore nella visualizzazione dell'albero processi"
 
+        win = tk.Toplevel(self.root)
         win.title("Process Tree (pstree)")
         txt = tk.Text(win)
-        win = tk.Toplevel(self.root)
         txt.pack(fill=tk.BOTH, expand=True)
         txt.insert(tk.END, output)
 
